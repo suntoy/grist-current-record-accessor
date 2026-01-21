@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Next Shipment Updater</title>
+  <script src="https://docs.getgrist.com/grist-plugin-api.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      padding: 16px;
+      margin: 0;
+      background: #f5f5f5;
+    }
+    
+    .container {
+      max-width: 500px;
+      margin: 0 auto;
+      background: white;
+      padding: 20px;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    h2 {
+      margin: 0 0 16px 0;
+      font-size: 18px;
+      font-weight: 600;
+      color: #333;
+      border-bottom: 2px solid #16c79a;
+      padding-bottom: 8px;
+    }
+    
+    .info-box {
+      padding: 12px;
+      background: #e3f2fd;
+      border-radius: 4px;
+      border-left: 4px solid #2196f3;
+      margin-bottom: 16px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    
+    .shipment-display {
+      padding: 16px;
+      background: #f8f9fa;
+      border-radius: 4px;
+      margin-bottom: 16px;
+    }
+    
+    .label {
+      font-size: 12px;
+      font-weight: 500;
+      color: #666;
+      text-transform: uppercase;
+      margin-bottom: 4px;
+    }
+    
+    .value {
+      font-size: 20px;
+      font-weight: 600;
+      color: #16c79a;
+    }
+    
+    .status {
+      padding: 8px 12px;
+      border-radius: 4px;
+      font-size: 13px;
+      margin-bottom: 12px;
+      text-align: center;
+    }
+    
+    .status.success {
+      background: #d4edda;
+      color: #155724;
+      border: 1px solid #c3e6cb;
+    }
+    
+    .status.info {
+      background: #d1ecf1;
+      color: #0c5460;
+      border: 1px solid #bee5eb;
+    }
+    
+    .status.warning {
+      background: #fff3cd;
+      color: #856404;
+      border: 1px solid #ffeaa7;
+    }
+    
+    .auto-update {
+      font-size: 12px;
+      color: #666;
+      text-align: center;
+      margin-top: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>📦 Active Shipment Tracker</h2>
+    
+    <div class="info-box">
+      <strong>Purpose:</strong> This widget automatically tracks which shipment you select. 
+      Your samples can then reference this "active" shipment using trigger formulas.
+    </div>
+    
+    <div id="status-area">
+      <div class="status info">Waiting for shipment selection...</div>
+    </div>
+    
+    <div class="shipment-display" id="shipment-display" style="display: none;">
+      <div class="label">📥 Received from Selection</div>
+      <div class="value" id="shipment-value">-</div>
+      <div id="shipment-details" style="margin-top: 8px; font-size: 13px; color: #666;"></div>
+    </div>
+    
+    <div class="shipment-display" id="nexttable-display" style="display: none; border: 2px solid #16c79a;">
+      <div class="label">📌 Current Value in Next_Shipment Table</div>
+      <div class="value" style="color: #0d8c6c;" id="nexttable-value">-</div>
+      <div id="nexttable-details" style="margin-top: 8px; font-size: 13px; color: #666;"></div>
+    </div>
+    
+    <div class="auto-update">
+      ⚡ Updates automatically when you select a different shipment
+    </div>
+  </div>
+
+  <script>
+    let nextShipmentTableId = 'Next_Shipment';  // Adjust if your table name differs
+    let nextShipmentRowId = 1;  // Usually 1 if it's a single-row table
+    
+    grist.ready({
+      requiredAccess: 'full',
+      columns: []
+    });
+    
+    // Configure table name via widget options if needed
+    grist.onOptions(function(options) {
+      if (options.nextShipmentTable) {
+        nextShipmentTableId = options.nextShipmentTable;
+      }
+      if (options.nextShipmentRowId) {
+        nextShipmentRowId = parseInt(options.nextShipmentRowId);
+      }
+    });
+    
+    // This widget should be linked to the Shipments table
+    // When user selects a shipment, this receives the record
+    grist.onRecord(async function(record) {
+      console.log('Received shipment selection:', record);
+      
+      if (!record || !record.id) {
+        showStatus('No shipment selected', 'info');
+        hideShipmentDisplay();
+        return;
+      }
+      
+      // First show what we received
+      showShipmentDisplay(record);
+      showStatus('⏳ Updating Next_Shipment table...', 'info');
+      
+      // Update the Next_Shipment table with this shipment's ID
+      try {
+        await updateNextShipment(record);
+        showStatus('✓ Active shipment updated successfully!', 'success');
+        
+        // Clear success message after 3 seconds
+        setTimeout(() => {
+          document.getElementById('status-area').innerHTML = '';
+        }, 3000);
+        
+      } catch (error) {
+        console.error('Error updating Next_Shipment:', error);
+        showStatus('❌ Error: ' + error.message, 'warning');
+      }
+    });
+    
+    // Load initial Next_Shipment value on startup
+    grist.on('message', async (e) => {
+      if (e.tableId || e.ready) {
+        await displayNextShipmentValue();
+      }
+    });
+    
+    async function updateNextShipment(shipmentRecord) {
+      // Update the single row in Next_Shipment table
+      // The column should be a Reference to Shipments table
+      await grist.docApi.applyUserActions([
+        ['UpdateRecord', nextShipmentTableId, nextShipmentRowId, {
+          Shipment: shipmentRecord.id  // Column name should match your Next_Shipment table
+        }]
+      ]);
+      
+      console.log('Updated Next_Shipment to:', shipmentRecord.id);
+      
+      // Fetch and display the updated value from Next_Shipment table
+      await displayNextShipmentValue();
+    }
+    
+    async function displayNextShipmentValue() {
+      try {
+        // Fetch the Next_Shipment table data
+        const nextShipmentData = await grist.docApi.fetchTable(nextShipmentTableId);
+        console.log('Next_Shipment table data:', nextShipmentData);
+        
+        // Find the row (should be first/only row)
+        const rowIndex = nextShipmentData.id.indexOf(nextShipmentRowId);
+        
+        if (rowIndex === -1) {
+          console.error('Could not find Next_Shipment row with id:', nextShipmentRowId);
+          document.getElementById('nexttable-value').textContent = 'Error: Row not found';
+          return;
+        }
+        
+        // Get the Shipment reference value
+        const shipmentRefId = nextShipmentData.Shipment ? nextShipmentData.Shipment[rowIndex] : null;
+        
+        const display = document.getElementById('nexttable-display');
+        const value = document.getElementById('nexttable-value');
+        const details = document.getElementById('nexttable-details');
+        
+        if (shipmentRefId) {
+          // Fetch the actual shipment record to show details
+          try {
+            const shipmentsData = await grist.docApi.fetchTable('Shipments');
+            const shipmentIndex = shipmentsData.id.indexOf(shipmentRefId);
+            
+            if (shipmentIndex !== -1) {
+              const displayId = (shipmentsData.Shipment_ID && shipmentsData.Shipment_ID[shipmentIndex]) || 
+                              (shipmentsData.shipment_id && shipmentsData.shipment_id[shipmentIndex]) || 
+                              `Shipment #${shipmentRefId}`;
+              
+              value.textContent = displayId;
+              
+              let detailsHtml = `<strong>Reference ID:</strong> ${shipmentRefId}`;
+              
+              if (shipmentsData.Date && shipmentsData.Date[shipmentIndex]) {
+                detailsHtml += ` | <strong>Date:</strong> ${shipmentsData.Date[shipmentIndex]}`;
+              }
+              if (shipmentsData.Destination && shipmentsData.Destination[shipmentIndex]) {
+                detailsHtml += ` | <strong>Destination:</strong> ${shipmentsData.Destination[shipmentIndex]}`;
+              }
+              
+              details.innerHTML = detailsHtml;
+            } else {
+              value.textContent = `Shipment ID: ${shipmentRefId}`;
+              details.innerHTML = '<strong>Reference ID:</strong> ' + shipmentRefId;
+            }
+          } catch (err) {
+            console.error('Error fetching shipment details:', err);
+            value.textContent = `Shipment ID: ${shipmentRefId}`;
+            details.innerHTML = '<strong>Reference ID:</strong> ' + shipmentRefId;
+          }
+        } else {
+          value.textContent = 'None (empty)';
+          details.innerHTML = 'No shipment is currently set';
+        }
+        
+        display.style.display = 'block';
+        
+      } catch (error) {
+        console.error('Error fetching Next_Shipment value:', error);
+        document.getElementById('nexttable-value').textContent = 'Error loading';
+        document.getElementById('nexttable-details').innerHTML = error.message;
+      }
+    }
+    
+    function showShipmentDisplay(record) {
+      const display = document.getElementById('shipment-display');
+      const value = document.getElementById('shipment-value');
+      const details = document.getElementById('shipment-details');
+      
+      // Try to get a display value from common column names
+      const displayId = record.Shipment_ID || 
+                       record.shipment_id || 
+                       record.name || 
+                       record.Name ||
+                       `Shipment #${record.id}`;
+      
+      value.textContent = displayId;
+      
+      // Show additional details if available
+      let detailsHtml = `<strong>Row ID:</strong> ${record.id}`;
+      
+      if (record.Date || record.date) {
+        detailsHtml += ` | <strong>Date:</strong> ${record.Date || record.date}`;
+      }
+      if (record.Destination || record.destination) {
+        detailsHtml += ` | <strong>Destination:</strong> ${record.Destination || record.destination}`;
+      }
+      
+      details.innerHTML = detailsHtml;
+      display.style.display = 'block';
+    }
+    
+    function hideShipmentDisplay() {
+      document.getElementById('shipment-display').style.display = 'none';
+    }
+    
+    function showStatus(message, type) {
+      const statusArea = document.getElementById('status-area');
+      statusArea.innerHTML = `<div class="status ${type}">${message}</div>`;
+    }
+  </script>
+</body>
+</html>
