@@ -123,19 +123,27 @@
     <div class="auto-update">
       ⚡ Updates automatically when you select a different shipment
     </div>
+    
+    <div style="text-align: center; margin-top: 12px;">
+      <button onclick="manualRefresh()" style="padding: 6px 12px; font-size: 12px; cursor: pointer; background: #e0e0e0; border: 1px solid #ccc; border-radius: 4px;">
+        🔄 Manual Refresh
+      </button>
+    </div>
   </div>
 
   <script>
     let nextShipmentTableId = 'Next_Shipment';  // Adjust if your table name differs
     let nextShipmentRowId = 1;  // Usually 1 if it's a single-row table
+    let lastProcessedId = null;  // Track last processed shipment to avoid duplicates
     
     grist.ready({
       requiredAccess: 'full',
-      columns: []
+      onEditOptions: true  // Enable configuration
     });
     
     // Configure table name via widget options if needed
     grist.onOptions(function(options) {
+      console.log('Widget options received:', options);
       if (options.nextShipmentTable) {
         nextShipmentTableId = options.nextShipmentTable;
       }
@@ -144,16 +152,43 @@
       }
     });
     
-    // This widget should be linked to the Shipments table
-    // When user selects a shipment, this receives the record
-    grist.onRecord(async function(record) {
-      console.log('Received shipment selection:', record);
+    // Handle single record selection (when widget shows SELECT BY)
+    grist.onRecord(async function(record, mappings) {
+      console.log('onRecord called with:', record, 'mappings:', mappings);
+      await handleShipmentSelection(record);
+    });
+    
+    // Handle when widget shows multiple records (failsafe)
+    grist.onRecords(async function(records, mappings) {
+      console.log('onRecords called with:', records, 'mappings:', mappings);
+      // Take the first record if available
+      if (records && records.length > 0) {
+        await handleShipmentSelection(records[0]);
+      }
+    });
+    
+    // Unified handler for shipment selection
+    async function handleShipmentSelection(record) {
+      console.log('Processing shipment record:', record);
       
       if (!record || !record.id) {
+        console.log('No valid record received');
         showStatus('No shipment selected', 'info');
         hideShipmentDisplay();
+        lastProcessedId = null;
         return;
       }
+      
+      // Only skip if it's the exact same ID AND we just processed it (within 100ms)
+      const now = Date.now();
+      if (lastProcessedId === record.id && (now - (window.lastProcessTime || 0)) < 100) {
+        console.log('Skipping duplicate call for shipment ID:', record.id);
+        return;
+      }
+      
+      lastProcessedId = record.id;
+      window.lastProcessTime = now;
+      console.log('Processing shipment ID:', record.id, 'at', new Date(now).toISOString());
       
       // First show what we received
       showShipmentDisplay(record);
@@ -173,14 +208,12 @@
         console.error('Error updating Next_Shipment:', error);
         showStatus('❌ Error: ' + error.message, 'warning');
       }
-    });
+    }
     
     // Load initial Next_Shipment value on startup
-    grist.on('message', async (e) => {
-      if (e.tableId || e.ready) {
-        await displayNextShipmentValue();
-      }
-    });
+    setTimeout(async () => {
+      await displayNextShipmentValue();
+    }, 500);
     
     async function updateNextShipment(shipmentRecord) {
       // Update the single row in Next_Shipment table
@@ -300,6 +333,17 @@
     function showStatus(message, type) {
       const statusArea = document.getElementById('status-area');
       statusArea.innerHTML = `<div class="status ${type}">${message}</div>`;
+    }
+    
+    // Manual refresh function for troubleshooting
+    async function manualRefresh() {
+      console.log('Manual refresh triggered');
+      showStatus('⏳ Refreshing...', 'info');
+      await displayNextShipmentValue();
+      showStatus('✓ Refreshed', 'success');
+      setTimeout(() => {
+        document.getElementById('status-area').innerHTML = '';
+      }, 2000);
     }
   </script>
 </body>
