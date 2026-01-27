@@ -102,6 +102,9 @@
     <div class="info-box">
       <strong>Purpose:</strong> This widget automatically tracks which shipment you select. 
       Your samples can then reference this "active" shipment using trigger formulas.
+      <div id="user-display" style="margin-top: 8px; padding-top: 8px; border-top: 1px solid #b3d9ff; font-size: 12px;">
+        <strong>👤 Current User:</strong> <span id="user-name">Loading...</span>
+      </div>
     </div>
     
     <div id="status-area">
@@ -133,22 +136,58 @@
 
   <script>
     let nextShipmentTableId = 'Next_Shipment';  // Adjust if your table name differs
-    let nextShipmentRowId = 1;  // Usually 1 if it's a single-row table
     let lastProcessedId = null;  // Track last processed shipment to avoid duplicates
+    let currentUser = null;  // Store current user info
     
     grist.ready({
       requiredAccess: 'full',
       onEditOptions: true  // Enable configuration
     });
     
+    // Get current user information
+    async function getCurrentUser() {
+      try {
+        const userInfo = await grist.docApi.fetchTable('_grist_Users');
+        const accessInfo = await grist.getAccessToken({readOnly: true});
+        
+        // Grist provides user email and ID
+        console.log('User info:', userInfo, 'Access:', accessInfo);
+        
+        // Try to get user from Grist's user context
+        // The user email is the most reliable identifier
+        return {
+          email: accessInfo.user?.email || 'unknown',
+          name: accessInfo.user?.name || 'Unknown User',
+          id: accessInfo.user?.id || 'unknown'
+        };
+      } catch (error) {
+        console.error('Could not fetch user info:', error);
+        // Fallback - generate a session ID
+        let sessionId = sessionStorage.getItem('grist_session_id');
+        if (!sessionId) {
+          sessionId = 'session_' + Math.random().toString(36).substr(2, 9);
+          sessionStorage.setItem('grist_session_id', sessionId);
+        }
+        return {
+          email: sessionId,
+          name: 'User',
+          id: sessionId
+        };
+      }
+    }
+    
+    // Initialize user context
+    (async () => {
+      currentUser = await getCurrentUser();
+      console.log('Current user:', currentUser);
+      updateUserDisplay();
+    })();
+    
     // Configure table name via widget options if needed
     grist.onOptions(function(options) {
       console.log('Widget options received:', options);
       if (options.nextShipmentTable) {
         nextShipmentTableId = options.nextShipmentTable;
-      }
-      if (options.nextShipmentRowId) {
-        nextShipmentRowId = parseInt(options.nextShipmentRowId);
       }
     });
     
@@ -216,15 +255,48 @@
     }, 500);
     
     async function updateNextShipment(shipmentRecord) {
-      // Update the single row in Next_Shipment table
-      // The column should be a Reference to Shipments table
-      await grist.docApi.applyUserActions([
-        ['UpdateRecord', nextShipmentTableId, nextShipmentRowId, {
-          Shipment: shipmentRecord.id  // Column name should match your Next_Shipment table
-        }]
-      ]);
+      if (!currentUser) {
+        console.error('User not initialized yet');
+        await new Promise(resolve => setTimeout(resolve, 500));
+        currentUser = await getCurrentUser();
+      }
       
-      console.log('Updated Next_Shipment to:', shipmentRecord.id);
+      try {
+        const nextShipmentData = await grist.docApi.fetchTable(nextShipmentTableId);
+        const userColumn = nextShipmentData.User || nextShipmentData.user_email || [];
+        
+        // Find existing row for this user
+        let userRowId = null;
+        for (let i = 0; i < nextShipmentData.id.length; i++) {
+          if (userColumn[i] === currentUser.email || userColumn[i] === currentUser.id) {
+            userRowId = nextShipmentData.id[i];
+            break;
+          }
+        }
+        
+        if (userRowId) {
+          // Update existing row
+          await grist.docApi.applyUserActions([
+            ['UpdateRecord', nextShipmentTableId, userRowId, {
+              Shipment: shipmentRecord.id,
+              User: currentUser.email
+            }]
+          ]);
+          console.log('Updated Next_Shipment row', userRowId, 'for user', currentUser.email);
+        } else {
+          // Create new row for this user
+          await grist.docApi.applyUserActions([
+            ['AddRecord', nextShipmentTableId, null, {
+              Shipment: shipmentRecord.id,
+              User: currentUser.email
+            }]
+          ]);
+          console.log('Created new Next_Shipment row for user', currentUser.email);
+        }
+      } catch (error) {
+        console.error('Error updating Next_Shipment:', error);
+        throw error;
+      }
       
       // Fetch and display the updated value from Next_Shipment table
       await displayNextShipmentValue();
@@ -236,12 +308,27 @@
         const nextShipmentData = await grist.docApi.fetchTable(nextShipmentTableId);
         console.log('Next_Shipment table data:', nextShipmentData);
         
-        // Find the row (should be first/only row)
-        const rowIndex = nextShipmentData.id.indexOf(nextShipmentRowId);
+        if (!currentUser) {
+          console.warn('User not initialized yet');
+          return;
+        }
+        
+        // Find this user's row
+        const userColumn = nextShipmentData.User || nextShipmentData.user_email || [];
+        let rowIndex = -1;
+        
+        for (let i = 0; i < nextShipmentData.id.length; i++) {
+          if (userColumn[i] === currentUser.email || userColumn[i] === currentUser.id) {
+            rowIndex = i;
+            break;
+          }
+        }
         
         if (rowIndex === -1) {
-          console.error('Could not find Next_Shipment row with id:', nextShipmentRowId);
-          document.getElementById('nexttable-value').textContent = 'Error: Row not found';
+          console.warn('Could not find Next_Shipment row for user:', currentUser.email);
+          document.getElementById('nexttable-value').textContent = 'No row found';
+          document.getElementById('nexttable-details').innerHTML = 'No row for current user yet - select a shipment to create one';
+          document.getElementById('nexttable-display').style.display = 'block';
           return;
         }
         
@@ -298,6 +385,13 @@
       }
     }
     
+    // Update user display in UI
+    function updateUserDisplay() {
+      if (currentUser) {
+        const userNameEl = document.getElementById('user-name');
+        userNameEl.textContent = currentUser.name || currentUser.email;
+      }
+    }
     function showShipmentDisplay(record) {
       const display = document.getElementById('shipment-display');
       const value = document.getElementById('shipment-value');
@@ -348,3 +442,17 @@
   </script>
 </body>
 </html>
+  
+    // Update user display in UI
+    function updateUserDisplay() {
+      if (currentUser) {
+        const userNameEl = document.getElementById('user-name');
+        userNameEl.textContent = currentUser.name || currentUser.email;
+        if (multiUserMode) {
+          userNameEl.textContent += ' (Multi-user mode)';
+          userNameEl.style.color = '#16c79a';
+          userNameEl.style.fontWeight = 'bold';
+        }
+      }
+    }
+  
