@@ -144,68 +144,29 @@
       onEditOptions: true  // Enable configuration
     });
     
-    // Get current user information
-    async function getCurrentUser() {
-      try {
-        // Try multiple methods to get user info
-        
-        // Method 1: Get from table access (most reliable for logged-in users)
-        const tables = await grist.docApi.listTables();
-        console.log('Available tables:', tables);
-        
-        // Method 2: Use the user context from Grist
-        // The $User variable in formulas corresponds to user.Email attribute
-        const usersTable = await grist.docApi.fetchTable('_grist_Users');
-        console.log('Users table:', usersTable);
-        
-        // Try to get current user's email directly
-        // In Grist, we can access this through the doc metadata
-        let userEmail = null;
-        let userName = null;
-        
-        // Check if there's user info in the users table
-        if (usersTable && usersTable.Email && usersTable.Email.length > 0) {
-          // The last user in the list is often the current user, but this isn't reliable
-          // Better approach: use grist.getUser()
-          const user = await grist.getUser();
-          console.log('Current user from grist.getUser():', user);
-          
-          if (user && user.Email) {
-            userEmail = user.Email;
-            userName = user.Name || user.Email.split('@')[0];
-          }
-        }
-        
-        // Fallback if we still don't have user info
-        if (!userEmail) {
-          throw new Error('Could not determine user email');
-        }
-        
-        return {
-          email: userEmail,
-          name: userName,
-          id: userEmail  // Use email as ID since it's unique
-        };
-      } catch (error) {
-        console.error('Could not fetch user info:', error);
-        throw new Error('This widget requires a logged-in Grist user. Session-based users are not supported.');
+    // Get current session identifier
+    function getCurrentUser() {
+      // Generate or retrieve session ID from browser storage
+      let sessionId = sessionStorage.getItem('grist_session_id');
+      if (!sessionId) {
+        sessionId = 'session_' + Math.random().toString(36).substr(2, 9) + '_' + Date.now();
+        sessionStorage.setItem('grist_session_id', sessionId);
+        console.log('Generated new session ID:', sessionId);
+      } else {
+        console.log('Using existing session ID:', sessionId);
       }
+      
+      return {
+        email: sessionId,
+        name: 'Session ' + sessionId.substr(-6),
+        id: sessionId
+      };
     }
     
-    // Initialize user context
-    (async () => {
-      try {
-        currentUser = await getCurrentUser();
-        console.log('Current user:', currentUser);
-        updateUserDisplay();
-      } catch (error) {
-        console.error('Failed to initialize user:', error);
-        showStatus('Error: ' + error.message, 'warning');
-        // Show error in UI
-        document.getElementById('user-name').textContent = 'Error: ' + error.message;
-        document.getElementById('user-name').style.color = '#dc3545';
-      }
-    })();
+    // Initialize session context
+    currentUser = getCurrentUser();
+    console.log('Current session:', currentUser);
+    updateUserDisplay();
     
     // Configure table name via widget options if needed
     grist.onOptions(function(options) {
@@ -280,9 +241,7 @@
     
     async function updateNextShipment(shipmentRecord) {
       if (!currentUser) {
-        console.error('User not initialized yet');
-        await new Promise(resolve => setTimeout(resolve, 500));
-        currentUser = await getCurrentUser();
+        currentUser = getCurrentUser();
       }
       
       try {
@@ -299,23 +258,25 @@
         }
         
         if (userRowId) {
-          // Update existing row
+          // Update existing row with timestamp
           await grist.docApi.applyUserActions([
             ['UpdateRecord', nextShipmentTableId, userRowId, {
               Shipment: shipmentRecord.id,
-              User: currentUser.email
+              User: currentUser.email,
+              Updated: new Date().toISOString()
             }]
           ]);
-          console.log('Updated Next_Shipment row', userRowId, 'for user', currentUser.email);
+          console.log('Updated Next_Shipment row', userRowId, 'for session', currentUser.email);
         } else {
-          // Create new row for this user
+          // Create new row for this session
           await grist.docApi.applyUserActions([
             ['AddRecord', nextShipmentTableId, null, {
               Shipment: shipmentRecord.id,
-              User: currentUser.email
+              User: currentUser.email,
+              Updated: new Date().toISOString()
             }]
           ]);
-          console.log('Created new Next_Shipment row for user', currentUser.email);
+          console.log('Created new Next_Shipment row for session', currentUser.email);
         }
       } catch (error) {
         console.error('Error updating Next_Shipment:', error);
